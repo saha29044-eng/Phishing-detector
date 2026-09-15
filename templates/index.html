@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Phishing Detection System</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="page">
+  <header class="hero">
+    <h1>🛡️ Phishing Detection System</h1>
+    <p>Check a suspicious link or email against machine learning models trained on real phishing data.</p>
+  </header>
+
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="url-tab">Check a URL</button>
+    <button class="tab-btn" data-tab="email-tab">Check an Email</button>
+  </div>
+
+  <section id="url-tab" class="tab-panel active">
+    {% if not url_model_ready %}
+    <div class="warning-banner">⚠️ URL model not found. Run <code>python src/train_url_model.py</code> first.</div>
+    {% endif %}
+    <label for="url-input">Paste a URL</label>
+    <textarea id="url-input" rows="2" placeholder="e.g. http://paypal-secure-login.verify-account.tk/reset"></textarea>
+    <button id="url-btn" class="submit-btn">Analyze URL</button>
+
+    <div id="url-result" class="result hidden">
+      <div class="verdict">
+        <span id="url-verdict-badge" class="badge"></span>
+        <span id="url-verdict-prob" class="prob"></span>
+      </div>
+      <div class="meter"><div id="url-meter-fill" class="meter-fill"></div></div>
+      <h4>Why?</h4>
+      <ul id="url-reasons"></ul>
+    </div>
+  </section>
+
+  <section id="email-tab" class="tab-panel">
+    {% if not email_model_ready %}
+    <div class="warning-banner">⚠️ Email model not found. Run <code>python src/train_email_model.py</code> first.</div>
+    {% endif %}
+    <label for="email-input">Paste the email text (subject + body)</label>
+    <textarea id="email-input" rows="8" placeholder="Subject: Your account has been suspended&#10;&#10;Dear customer, we noticed unusual activity on your account. Click here to verify your identity within 24 hours or your account will be permanently closed..."></textarea>
+    <button id="email-btn" class="submit-btn">Analyze Email</button>
+
+    <div id="email-result" class="result hidden">
+      <div class="verdict">
+        <span id="email-verdict-badge" class="badge"></span>
+        <span id="email-verdict-prob" class="prob"></span>
+      </div>
+      <div class="meter"><div id="email-meter-fill" class="meter-fill"></div></div>
+      <div class="signals">
+        <div class="signal-col">
+          <h4>Phishing-associated words found</h4>
+          <div id="email-phishing-words" class="chip-row"></div>
+        </div>
+        <div class="signal-col">
+          <h4>Legitimate-associated words found</h4>
+          <div id="email-legit-words" class="chip-row"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p>Local ML demo project &middot; not a substitute for real-time threat intelligence &middot; see README for dataset sources &amp; limitations</p>
+  </footer>
+</div>
+
+<script>
+// --- Tab switching ---
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById(btn.dataset.tab).classList.add("active");
+  });
+});
+
+function setVerdict(prefix, label, probability) {
+  const badge = document.getElementById(`${prefix}-verdict-badge`);
+  const prob = document.getElementById(`${prefix}-verdict-prob`);
+  const fill = document.getElementById(`${prefix}-meter-fill`);
+  const pct = Math.round(probability * 100);
+
+  badge.textContent = label === "phishing" ? "⚠️ Likely Phishing" : "✅ Likely Legitimate";
+  badge.className = "badge " + (label === "phishing" ? "badge-bad" : "badge-good");
+  prob.textContent = `${pct}% phishing probability`;
+  fill.style.width = `${pct}%`;
+  fill.className = "meter-fill " + (label === "phishing" ? "meter-bad" : "meter-good");
+}
+
+// --- URL checker ---
+document.getElementById("url-btn").addEventListener("click", async () => {
+  const url = document.getElementById("url-input").value.trim();
+  const resultBox = document.getElementById("url-result");
+  const btn = document.getElementById("url-btn");
+  if (!url) return;
+
+  btn.disabled = true;
+  btn.textContent = "Analyzing...";
+  try {
+    const res = await fetch("/api/check-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url })
+    });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || "Something went wrong."); return; }
+
+    setVerdict("url", data.label, data.probability);
+    const list = document.getElementById("url-reasons");
+    list.innerHTML = "";
+    data.reasons.forEach(r => {
+      const li = document.createElement("li");
+      li.textContent = r;
+      list.appendChild(li);
+    });
+    resultBox.classList.remove("hidden");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Analyze URL";
+  }
+});
+
+// --- Email checker ---
+document.getElementById("email-btn").addEventListener("click", async () => {
+  const text = document.getElementById("email-input").value.trim();
+  const resultBox = document.getElementById("email-result");
+  const btn = document.getElementById("email-btn");
+  if (!text) return;
+
+  btn.disabled = true;
+  btn.textContent = "Analyzing...";
+  try {
+    const res = await fetch("/api/check-email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text })
+    });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || "Something went wrong."); return; }
+
+    setVerdict("email", data.label, data.probability);
+
+    const phishingChips = document.getElementById("email-phishing-words");
+    phishingChips.innerHTML = "";
+    if (data.phishing_signals.length === 0) {
+      phishingChips.innerHTML = "<span class='chip-empty'>None found</span>";
+    } else {
+      data.phishing_signals.forEach(w => {
+        const chip = document.createElement("span");
+        chip.className = "chip chip-bad";
+        chip.textContent = w;
+        phishingChips.appendChild(chip);
+      });
+    }
+
+    const legitChips = document.getElementById("email-legit-words");
+    legitChips.innerHTML = "";
+    if (data.legitimate_signals.length === 0) {
+      legitChips.innerHTML = "<span class='chip-empty'>None found</span>";
+    } else {
+      data.legitimate_signals.forEach(w => {
+        const chip = document.createElement("span");
+        chip.className = "chip chip-good";
+        chip.textContent = w;
+        legitChips.appendChild(chip);
+      });
+    }
+
+    resultBox.classList.remove("hidden");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Analyze Email";
+  }
+});
+</script>
+
+</body>
+</html>
